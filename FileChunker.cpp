@@ -4,10 +4,12 @@
 #include <string>
 #include <vector>
 #include <atomic>
+#include <algorithm>
 
-const size_t READ_BUF_SIZE = 1024 * 1024;
+typedef uint64_t u64;
+
+const size_t READ_BUF_SIZE = 16 * 1024 * 1024;
 const size_t READ_AHEAD = 4;
-std::vector<char> lineBuf;
 
 char buf[READ_AHEAD][READ_BUF_SIZE];
 size_t bufSize[READ_AHEAD];
@@ -19,7 +21,6 @@ void FileReadAsync(FILE* file)
 	for (;;)
 	{
 		bufSize[writeCursor % READ_AHEAD] = fread(buf[writeCursor % READ_AHEAD], 1, READ_BUF_SIZE, file);
-		printf("Done reading\n");
 
 		if (bufSize[writeCursor % READ_AHEAD] < READ_BUF_SIZE)
 			break;
@@ -33,13 +34,16 @@ int main(int argc, const char** argv)
 {
 	if (argc != 4)
 	{
-		printf("Expected usage: <filename> <chunkFilePrefix> <chunkSizeInMB>");
+		printf("Expected usage: <filename> <chunkFilePrefix> <chunkSizeInMB> <chunkMemoryBufferInMB>");
 		return -1;
 	}
 
 	const char* filename = argv[1];
 	const char* chunkPrefix = argv[2];
 	const char* chunkSizeStr = argv[3];
+	const char* chunkMemBufStr = nullptr;
+	if (argc == 5)
+		chunkMemBufStr = argv[4];
 
 	const char* fileExt = nullptr;
 	for (int i = strlen(filename); i > 0;)
@@ -52,7 +56,8 @@ int main(int argc, const char** argv)
 		}
 	}
 
-	const uint32_t chunkSize = std::stoul(chunkSizeStr) * 1024 * 1024;
+	const u64 chunkSize = std::stoul(chunkSizeStr) * 1024ull * 1024ull;
+	const u64 chunkMemBufSize = (chunkMemBufStr) ? std::max(READ_BUF_SIZE * 2, std::stoul(chunkMemBufStr) * 1024ull * 1024ull) : READ_BUF_SIZE * 2;
 
 	FILE* src = fopen(filename, "rb");
 	int error = errno;
@@ -61,7 +66,8 @@ int main(int argc, const char** argv)
 
 	std::thread asyncFileThread = std::thread(FileReadAsync, src);
 
-	lineBuf.reserve(READ_BUF_SIZE * 2);
+	std::vector<char> chunkBuf;
+	chunkBuf.reserve(chunkMemBufSize * 2);
 
 	size_t currentChunkSize = 0;
 	size_t chunkIdx = 0;
@@ -75,10 +81,10 @@ int main(int argc, const char** argv)
 			char bufChar = buf[readCursor % READ_AHEAD][i];
 			if (bufChar == '\n' || bufChar == '\r')
 			{
-				if (lineBuf.size() == 0)
+				if (chunkBuf.size() == 0)
 					continue;
 
-				if (currentChunkSize + lineBuf.size() > chunkSize)
+				if (currentChunkSize + chunkBuf.size() > chunkSize)
 				{
 					fclose(chunkFile);
 					printf("Finished writing %s\n", (std::string(chunkPrefix) + std::to_string(chunkIdx)).c_str());
@@ -87,16 +93,16 @@ int main(int argc, const char** argv)
 					chunkFile = fopen((std::string(chunkPrefix) + std::to_string(chunkIdx) + fileExt).c_str(), "wb");
 				}
 
-				lineBuf.push_back('\r');
-				lineBuf.push_back('\n');
-				std::string test = lineBuf.data();
-				fwrite(lineBuf.data(), 1, lineBuf.size(), chunkFile);
-				currentChunkSize += lineBuf.size();
-				lineBuf.clear();
+				chunkBuf.push_back('\r');
+				chunkBuf.push_back('\n');
+				std::string test = chunkBuf.data();
+				fwrite(chunkBuf.data(), 1, chunkBuf.size(), chunkFile);
+				currentChunkSize += chunkBuf.size();
+				chunkBuf.clear();
 			}
 			else
 			{
-				lineBuf.push_back(bufChar);
+				chunkBuf.push_back(bufChar);
 			}
 		}
 
