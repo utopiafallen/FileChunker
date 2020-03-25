@@ -41,12 +41,12 @@ int main(int argc, const char** argv)
 	const char* filename = argv[1];
 	const char* chunkPrefix = argv[2];
 	const char* chunkSizeStr = argv[3];
-	const char* chunkMemBufStr = nullptr;
+	const char* chunkBufMemStr = nullptr;
 	if (argc == 5)
-		chunkMemBufStr = argv[4];
+		chunkBufMemStr = argv[4];
 
-	const char* fileExt = nullptr;
-	for (int i = strlen(filename); i > 0;)
+	const char* fileExt = "txt";
+	for (size_t i = strlen(filename); i > 0;)
 	{
 		--i;
 		if (filename[i] == '.')
@@ -57,7 +57,7 @@ int main(int argc, const char** argv)
 	}
 
 	const u64 chunkSize = std::stoul(chunkSizeStr) * 1024ull * 1024ull;
-	const u64 chunkMemBufSize = (chunkMemBufStr) ? std::max(READ_BUF_SIZE * 2, std::stoul(chunkMemBufStr) * 1024ull * 1024ull) : READ_BUF_SIZE * 2;
+	const u64 chunkBufMemSize = (chunkBufMemStr) ? std::max(READ_BUF_SIZE * 2, std::stoul(chunkBufMemStr) * 1024ull * 1024ull) : READ_BUF_SIZE * 2;
 
 	FILE* src = fopen(filename, "rb");
 	int error = errno;
@@ -67,42 +67,61 @@ int main(int argc, const char** argv)
 	std::thread asyncFileThread = std::thread(FileReadAsync, src);
 
 	std::vector<char> chunkBuf;
-	chunkBuf.reserve(chunkMemBufSize * 2);
+	chunkBuf.reserve(chunkBufMemSize + 2);
 
 	size_t currentChunkSize = 0;
 	size_t chunkIdx = 0;
 	FILE* chunkFile = fopen((std::string(chunkPrefix) + std::to_string(chunkIdx) + fileExt).c_str(), "wb");
+	u64 mostRecentNewLine = 0;
+	u64 prevRecentNewLine = 0;
 	for (;;)
 	{
 		size_t readSize = bufSize[readCursor % READ_AHEAD];
+		const char* readBuf = buf[readCursor % READ_AHEAD];
 
 		for (size_t i = 0; i < readSize; ++i)
 		{
-			char bufChar = buf[readCursor % READ_AHEAD][i];
+			char bufChar = readBuf[i];
 			if (bufChar == '\n' || bufChar == '\r')
 			{
-				if (chunkBuf.size() == 0)
+				if (chunkBuf.back() == '\n')
 					continue;
-
-				if (currentChunkSize + chunkBuf.size() > chunkSize)
-				{
-					fclose(chunkFile);
-					printf("Finished writing %s\n", (std::string(chunkPrefix) + std::to_string(chunkIdx)).c_str());
-					++chunkIdx;
-					currentChunkSize = 0;
-					chunkFile = fopen((std::string(chunkPrefix) + std::to_string(chunkIdx) + fileExt).c_str(), "wb");
-				}
 
 				chunkBuf.push_back('\r');
 				chunkBuf.push_back('\n');
-				std::string test = chunkBuf.data();
-				fwrite(chunkBuf.data(), 1, chunkBuf.size(), chunkFile);
-				currentChunkSize += chunkBuf.size();
-				chunkBuf.clear();
+				prevRecentNewLine = mostRecentNewLine;
+				mostRecentNewLine = chunkBuf.size();
 			}
 			else
 			{
 				chunkBuf.push_back(bufChar);
+			}
+
+			if (currentChunkSize + chunkBuf.size() > chunkSize)
+			{
+				if (prevRecentNewLine)
+				{
+					fwrite(chunkBuf.data(), 1, prevRecentNewLine + 1, chunkFile);
+					chunkBuf.erase(chunkBuf.begin(), chunkBuf.begin() + prevRecentNewLine + 1);
+				}
+				
+				mostRecentNewLine -= prevRecentNewLine;
+				prevRecentNewLine = 0;
+				fclose(chunkFile);
+
+				printf("Finished writing %s\n", (std::string(chunkPrefix) + std::to_string(chunkIdx)).c_str());
+				++chunkIdx;
+				currentChunkSize = 0;
+				chunkFile = fopen((std::string(chunkPrefix) + std::to_string(chunkIdx) + fileExt).c_str(), "wb");
+			}
+
+			if (chunkBuf.size() >= chunkBufMemSize)
+			{
+				fwrite(chunkBuf.data(), 1, mostRecentNewLine + 1, chunkFile);
+				currentChunkSize += mostRecentNewLine + 1;
+				chunkBuf.erase(chunkBuf.begin(), chunkBuf.begin() + mostRecentNewLine + 1);
+				prevRecentNewLine = 0;
+				mostRecentNewLine = 0;
 			}
 		}
 
@@ -112,6 +131,8 @@ int main(int argc, const char** argv)
 		++readCursor;
 		while (readCursor == writeCursor);
 	}
+	if (chunkBuf.size())
+		fwrite(chunkBuf.data(), 1, chunkBuf.size(), chunkFile);
 	fclose(chunkFile);
 	
 	asyncFileThread.join();
