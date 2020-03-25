@@ -56,6 +56,9 @@ int main(int argc, const char** argv)
 		}
 	}
 
+	const bool isCSV = (std::strcmp(fileExt, "csv") == 0);
+	std::string csvColumnHeaders;
+
 	const u64 chunkSize = std::stoul(chunkSizeStr) * 1024ull * 1024ull;
 	const u64 chunkBufMemSize = (chunkBufMemStr) ? std::max(READ_BUF_SIZE * 2, std::stoul(chunkBufMemStr) * 1024ull * 1024ull) : READ_BUF_SIZE * 2;
 
@@ -91,6 +94,9 @@ int main(int argc, const char** argv)
 				chunkBuf.push_back('\n');
 				prevRecentNewLine = mostRecentNewLine;
 				mostRecentNewLine = chunkBuf.size();
+
+				if (isCSV && csvColumnHeaders.empty())
+					csvColumnHeaders.assign(chunkBuf.data(), chunkBuf.size());
 			}
 			else
 			{
@@ -113,6 +119,8 @@ int main(int argc, const char** argv)
 				++chunkIdx;
 				currentChunkSize = 0;
 				chunkFile = fopen((std::string(chunkPrefix) + std::to_string(chunkIdx) + fileExt).c_str(), "wb");
+				if (isCSV)
+					chunkBuf.insert(chunkBuf.begin(), csvColumnHeaders.begin(), csvColumnHeaders.end());
 			}
 
 			if (chunkBuf.size() >= chunkBufMemSize)
